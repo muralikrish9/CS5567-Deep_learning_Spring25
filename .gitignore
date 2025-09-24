@@ -1,0 +1,20 @@
+# Ignore OS artifacts
+.DS_Store
+
+# Build / cache directories
+__pycache__/
+.pytest_cache/
+.clang-module-cache/
+
+# Data artifacts and large files
+MOT16.zip
+/data/
+/outputs/
+
+# Generated assets
+pdf_pages/
+render_pdf
+render_pdf.swift
+
+# Environment files
+*.log
