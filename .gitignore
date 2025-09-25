@@ -1,4 +1,7 @@
 # Python venvs
+__pycache__/
+*.pyc
+
 .venv/
 
 # Large datasets and outputs
