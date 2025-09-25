@@ -1,0 +1,11 @@
+# Python venvs
+.venv/
+
+# Large datasets and outputs
+MOT16.zip
+data/MOT16/
+outputs/
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
