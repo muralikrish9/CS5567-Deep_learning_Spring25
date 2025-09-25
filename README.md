@@ -163,19 +163,3 @@ Same command works on Windows PowerShell. If boxes jitter, bump `--detection-thr
 - `docs_detector_training.md` — extended notes / reproduction log
 - `outputs/` — generated artifacts (git-ignored; regenerate using the steps above)
 
-## 8. Clean Before Push
-```bash
-rm -f MOT16.zip
-rm -rf outputs/
-rm -rf data/MOT16
-```
-(Windows PowerShell: `Remove-Item MOT16.zip; Remove-Item -Recurse outputs; Remove-Item -Recurse data/MOT16`)
-
-Then stage only source/docs:
-```bash
-git add README.md docs_detector_training.md src/ scripts/ tests/
-git commit -m "Document MOT16 pipeline and reproduction steps"
-git push origin branch2_s3
-```
-
-Anyone who clones the repo and follows the sections above can regenerate the detector, the Re-ID model, the tracking logs, and the overlay videos.
