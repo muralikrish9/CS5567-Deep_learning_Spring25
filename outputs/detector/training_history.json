@@ -1,0 +1,62 @@
+[
+  {
+    "epoch": 1,
+    "loss": 2.47,
+    "val_loss": 1.75
+  },
+  {
+    "epoch": 2,
+    "loss": 2.11,
+    "val_loss": 1.42
+  },
+  {
+    "epoch": 3,
+    "loss": 1.76,
+    "val_loss": 1.23
+  },
+  {
+    "epoch": 4,
+    "loss": 1.44,
+    "val_loss": 1.08
+  },
+  {
+    "epoch": 5,
+    "loss": 1.25,
+    "val_loss": 0.99
+  },
+  {
+    "epoch": 6,
+    "loss": 1.12,
+    "val_loss": 0.94
+  },
+  {
+    "epoch": 7,
+    "loss": 1.02,
+    "val_loss": 0.92
+  },
+  {
+    "epoch": 8,
+    "loss": 0.96,
+    "val_loss": 0.91
+  },
+  {
+    "epoch": 9,
+    "loss": 0.93,
+    "val_loss": 0.9
+  },
+  {
+    "epoch": 10,
+    "loss": 0.92,
+    "val_loss": 0.89
+  },
+  {
+    "epoch": 11,
+    "loss": 0.92,
+    "val_loss": 0.88
+  },
+  {
+    "epoch": 12,
+    "loss": 0.92,
+    "val_loss": 0.88
+  }
+]
