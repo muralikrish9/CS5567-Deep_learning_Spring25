@@ -3,3 +3,4 @@ torchvision
 tqdm
 opencv-python
 numpy
+ultralytics

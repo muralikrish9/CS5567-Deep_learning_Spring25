@@ -82,7 +82,7 @@ python -m src.training.reid_trainer \
 ```
 
 ## Tracking (multi-target)
-Defaults tuned to reduce ghost boxes: `--detection-threshold 0.80`, `--max-distance 0.23`, `--max-track-age 32`, `--smoothing-alpha 0.80`, `--reactivation-distance 0.30`, `--emit-unmatched` disabled by default.
+Defaults tuned to reduce ghost boxes: `--detection-threshold 0.80`, `--max-distance 0.23`, `--max-track-age 32`, `--smoothing-alpha 0.80`, `--reactivation-distance 0.30`, `--emit-unmatched` disabled by default. Backends: Faster R-CNN (default) or YOLOv8 (`--detector-backend yolov8`).
 ```bash
 python -m src.tracking.inference \
     data/MOT16/test \
@@ -91,6 +91,7 @@ python -m src.tracking.inference \
     outputs/reid/best_reid_model.pth \
     --output-dir outputs/tracks \
     --sequences MOT16-07 \
+    --detector-backend fasterrcnn \
     --detection-threshold 0.80 \
     --max-distance 0.23 \
     --iou-weight 0.75 \
@@ -108,6 +109,28 @@ python scripts/render_tracks.py \
     --fps 10
 ```
 Tuning tips: if ghosts appear, raise `--detection-threshold` (e.g., 0.82) or lower `--reactivation-distance` (e.g., 0.25). If IDs drop too quickly, nudge `--max-track-age` upward modestly.
+
+### Using YOLOv8 detector
+Install dependency (already in `requirements.txt`): `pip install ultralytics`. Then run:
+```bash
+python -m src.tracking.inference \
+    data/MOT16/test \
+    data/processed_annotations \
+    path/to/yolov8n.pt \
+    outputs/reid/best_reid_model.pth \
+    --output-dir outputs/tracks \
+    --sequences MOT16-07 \
+    --detector-backend yolov8 \
+    --person-class 0 \
+    --detection-threshold 0.25 \
+    --max-distance 0.23 \
+    --iou-weight 0.75 \
+    --max-track-age 32 \
+    --smoothing-alpha 0.80 \
+    --context-scale 1.30 \
+    --reactivation-distance 0.30
+```
+Adjust `--person-class` if your YOLO weights use a different label mapping. Lower the detection threshold for smaller YOLO models; increase if ghosts appear.
 
 ## Single-target demo (how this repo’s MP4 was made)
 1) Run inference (as above) on a MOT16 **test** sequence.  

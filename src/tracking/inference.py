@@ -45,6 +45,8 @@ class TrackerConfig:
     num_workers: int = 2
     smoothing_alpha: float = 0.8
     emit_unmatched: bool = False  # default off to avoid ghost boxes
+    detector_backend: str = "fasterrcnn"  # or "yolov8"
+    person_class: int = 0  # YOLOv8 person class id (COCO = 0)
 
 
 @dataclass
@@ -119,6 +121,16 @@ def load_reid_model(checkpoint_path: Path, device: torch.device) -> SiameseNetwo
     return model
 
 
+def load_yolov8(checkpoint_path: Path, device: torch.device):
+    try:
+        from ultralytics import YOLO  # type: ignore
+    except ImportError as exc:  # pragma: no cover
+        raise ImportError("ultralytics is required for YOLOv8 backend: pip install ultralytics") from exc
+    model = YOLO(str(checkpoint_path))
+    model.to(str(device))
+    return model
+
+
 def preprocess_image(image: Image.Image) -> torch.Tensor:
     transform = transforms.Compose(
         [
@@ -134,6 +146,22 @@ def detections_to_numpy(detections: Dict[str, torch.Tensor], threshold: float):
     boxes = detections["boxes"][keep].cpu().numpy()
     scores = scores[keep]
     return boxes, scores
+
+
+def yolov8_detections_to_numpy(results, threshold: float, person_class: int):
+    if not results:
+        return np.empty((0, 4)), np.empty((0,))
+    res = results[0]
+    if res.boxes is None or len(res.boxes) == 0:
+        return np.empty((0, 4)), np.empty((0,))
+    boxes_xyxy = res.boxes.xyxy.cpu().numpy()
+    scores = res.boxes.conf.cpu().numpy()
+    classes = res.boxes.cls.cpu().numpy() if res.boxes.cls is not None else None
+    if classes is not None:
+        keep = (classes == person_class) & (scores >= threshold)
+    else:
+        keep = scores >= threshold
+    return boxes_xyxy[keep], scores[keep]
 
 
 def crop_embeddings(
@@ -182,7 +210,10 @@ def run_tracker(cfg: TrackerConfig) -> None:
     device = torch.device(cfg.device) if cfg.device else torch.device(
         "cuda" if torch.cuda.is_available() else "cpu"
     )
-    detector = load_detector(cfg.detector_checkpoint, device)
+    if cfg.detector_backend.lower() == "yolov8":
+        detector = load_yolov8(cfg.detector_checkpoint, device)
+    else:
+        detector = load_detector(cfg.detector_checkpoint, device)
     reid_model = load_reid_model(cfg.reid_checkpoint, device)
 
     sequences = discover_sequences(cfg.images_root, cfg.sequences)
@@ -281,10 +312,21 @@ def run_sequence(
     frames = sorted((sequence_dir / "img1").glob("*.jpg"))
     for frame_idx, frame_path in enumerate(frames, start=1):
         image = Image.open(frame_path).convert("RGB")
-        input_tensor = preprocess_image(image).to(device)
-        with torch.no_grad():
-            detections = detector([input_tensor])[0]
-        boxes, scores = detections_to_numpy(detections, cfg.detection_threshold)
+        if cfg.detector_backend.lower() == "yolov8":
+            frame_np = np.array(image)
+            with torch.no_grad():
+                results = detector(
+                    frame_np,
+                    conf=cfg.detection_threshold,
+                    verbose=False,
+                    device=str(device),
+                )
+            boxes, scores = yolov8_detections_to_numpy(results, cfg.detection_threshold, cfg.person_class)
+        else:
+            input_tensor = preprocess_image(image).to(device)
+            with torch.no_grad():
+                detections = detector([input_tensor])[0]
+            boxes, scores = detections_to_numpy(detections, cfg.detection_threshold)
         embeddings = crop_embeddings(
             reid_model,
             image,
@@ -467,6 +509,19 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrackerConfig:
     parser.add_argument("--num-workers", type=int, default=2)
     parser.add_argument("--smoothing-alpha", type=float, default=0.8)
     parser.add_argument(
+        "--detector-backend",
+        type=str,
+        choices=["fasterrcnn", "yolov8"],
+        default="fasterrcnn",
+        help="Detector backend to use for tracking inference.",
+    )
+    parser.add_argument(
+        "--person-class",
+        type=int,
+        default=0,
+        help="Class id to keep for YOLOv8 (COCO person=0). Ignored for Faster R-CNN backend.",
+    )
+    parser.add_argument(
         "--emit-unmatched",
         action="store_true",
         default=False,
@@ -498,6 +553,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrackerConfig:
         num_workers=args.num_workers,
         smoothing_alpha=args.smoothing_alpha,
         emit_unmatched=args.emit_unmatched,
+        detector_backend=args.detector_backend,
+        person_class=args.person_class,
     )
 
 
