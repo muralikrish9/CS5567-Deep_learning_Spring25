@@ -14,7 +14,7 @@ from torchvision import transforms
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 
 from src.training.reid_trainer import SiameseNetwork
-from src.tracking.association import associate_detections
+from src.tracking.association import associate_detections, cosine_distance_matrix
 
 
 try:
@@ -34,15 +34,17 @@ class TrackerConfig:
     output_dir: Path
     sequences: Optional[List[str]] = None
     device: Optional[str] = None
-    detection_threshold: float = 0.5
-    max_track_age: int = 30
-    max_distance: float = 0.5
-    iou_weight: float = 0.3
-    context_scale: float = 1.2
+    detection_threshold: float = 0.8
+    max_track_age: int = 32
+    max_distance: float = 0.23
+    reactivation_distance: float = 0.30
+    iou_weight: float = 0.75
+    context_scale: float = 1.3
     crop_size: int = 128
     batch_size: int = 16
     num_workers: int = 2
-    smoothing_alpha: float = 0.6
+    smoothing_alpha: float = 0.8
+    emit_unmatched: bool = False  # default off to avoid ghost boxes
 
 
 @dataclass
@@ -54,6 +56,7 @@ class Track:
     hits: int = 1
     age: int = 0
     smoothed_bbox: Optional[np.ndarray] = None
+    velocity: np.ndarray = field(default_factory=lambda: np.zeros(4, dtype=np.float32))
     history: List[Dict[str, float]] = field(default_factory=list)
 
 
@@ -196,6 +199,53 @@ def smooth_bbox(previous: Optional[np.ndarray], current: np.ndarray, alpha: floa
     return alpha * current + (1.0 - alpha) * previous
 
 
+def _reactivate_retired_tracks(
+    retired_tracks: List["Track"],
+    embeddings: np.ndarray,
+    unmatched_detections: List[int],
+    *,
+    max_distance: float,
+    current_frame: int,
+    max_inactive: int,
+) -> Tuple[List[Tuple["Track", int]], List[int], List["Track"]]:
+    """Try to reattach detections to recently retired tracks based on embeddings."""
+
+    if not retired_tracks or not unmatched_detections:
+        return [], unmatched_detections, retired_tracks
+
+    fresh_retired: List[Tuple[int, Track]] = []
+    for idx, t in enumerate(retired_tracks):
+        if current_frame - t.last_frame <= max_inactive:
+            fresh_retired.append((idx, t))
+
+    if not fresh_retired:
+        return [], unmatched_detections, []
+
+    retired_embeddings = np.array([t.embedding for _, t in fresh_retired])
+    det_embeddings = embeddings[unmatched_detections]
+    cost = cosine_distance_matrix(retired_embeddings, det_embeddings)
+
+    matches: List[Tuple["Track", int]] = []
+    used_retired: set[int] = set()
+    used_dets: set[int] = set()
+
+    cost_work = cost.copy()
+    while cost_work.size and np.isfinite(cost_work).any():
+        r_idx, d_idx = np.unravel_index(np.argmin(cost_work, axis=None), cost_work.shape)
+        best_cost = cost_work[r_idx, d_idx]
+        if not np.isfinite(best_cost) or best_cost > max_distance:
+            break
+        matches.append((fresh_retired[r_idx][1], unmatched_detections[d_idx]))
+        used_retired.add(r_idx)
+        used_dets.add(unmatched_detections[d_idx])
+        cost_work[r_idx, :] = np.inf
+        cost_work[:, d_idx] = np.inf
+
+    remaining_dets = [d for d in unmatched_detections if d not in used_dets]
+    remaining_retired = [t for i, t in fresh_retired if i not in used_retired]
+    return matches, remaining_dets, remaining_retired
+
+
 def discover_sequences(root: Path, sequences: Optional[Sequence[str]]) -> List[Path]:
     root = Path(root)
     if not sequences:
@@ -226,6 +276,7 @@ def run_sequence(
     track_id_counter = 0
     active_tracks: List[Track] = []
     outputs: List[Dict[str, float]] = []
+    retired_tracks: List[Track] = []
 
     frames = sorted((sequence_dir / "img1").glob("*.jpg"))
     for frame_idx, frame_path in enumerate(frames, start=1):
@@ -256,6 +307,7 @@ def run_sequence(
 
         for track_idx, det_idx in matches:
             track = active_tracks[track_idx]
+            prev_smoothed = track.smoothed_bbox.copy() if track.smoothed_bbox is not None else None
             track.embedding = embeddings[det_idx]
             track.bbox = boxes[det_idx]
             track.last_frame = frame_idx
@@ -267,6 +319,10 @@ def run_sequence(
                 boxes[det_idx],
                 cfg.smoothing_alpha,
             )
+            if prev_smoothed is not None:
+                track.velocity = track.smoothed_bbox - prev_smoothed
+            else:
+                track.velocity = np.zeros_like(track.smoothed_bbox, dtype=np.float32)
 
             outputs.append(
                 make_output(
@@ -280,8 +336,57 @@ def run_sequence(
         for track_idx in unmatched_tracks:
             track = active_tracks[track_idx]
             track.age += 1
+            # Predict forward using the last smoothed box + velocity to reduce ID switches.
+            base_box = track.smoothed_bbox if track.smoothed_bbox is not None else track.bbox
+            predicted_bbox = base_box + track.velocity
+            track.velocity *= 0.9  # decay velocity to avoid drifting too far
+            track.bbox = predicted_bbox
+            track.smoothed_bbox = predicted_bbox
+            # Optionally keep unmatched tracks visible using their last smoothed bbox.
+            if cfg.emit_unmatched and track.age <= cfg.max_track_age:
+                outputs.append(
+                    make_output(
+                        track.track_id,
+                        frame_idx,
+                        track.smoothed_bbox if track.smoothed_bbox is not None else track.bbox,
+                        score=0.0,
+                    )
+                )
 
-        active_tracks = [t for t in active_tracks if t.age <= cfg.max_track_age]
+        kept_tracks: List[Track] = []
+        for t in active_tracks:
+            if t.age <= cfg.max_track_age:
+                kept_tracks.append(t)
+            else:
+                retired_tracks.append(t)
+        active_tracks = kept_tracks
+
+        # Try to reattach detections to recently retired tracks before creating new IDs.
+        react_matches, unmatched_detections, retired_tracks = _reactivate_retired_tracks(
+            retired_tracks,
+            embeddings,
+            unmatched_detections,
+            max_distance=cfg.reactivation_distance,
+            current_frame=frame_idx,
+            max_inactive=cfg.max_track_age,
+        )
+        for track, det_idx in react_matches:
+            track.embedding = embeddings[det_idx]
+            track.bbox = boxes[det_idx]
+            track.smoothed_bbox = smooth_bbox(track.smoothed_bbox, boxes[det_idx], cfg.smoothing_alpha)
+            track.velocity = np.zeros_like(track.bbox, dtype=np.float32)
+            track.last_frame = frame_idx
+            track.age = 0
+            track.hits += 1
+            active_tracks.append(track)
+            outputs.append(
+                make_output(
+                    track.track_id,
+                    frame_idx,
+                    track.smoothed_bbox if track.smoothed_bbox is not None else track.bbox,
+                    scores[det_idx],
+                )
+            )
 
         for det_idx in unmatched_detections:
             track_id_counter += 1
@@ -351,15 +456,28 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrackerConfig:
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/tracks"))
     parser.add_argument("--sequences", nargs="*", default=None)
     parser.add_argument("--device", type=str, default=None)
-    parser.add_argument("--detection-threshold", type=float, default=0.5)
-    parser.add_argument("--max-track-age", type=int, default=30)
-    parser.add_argument("--max-distance", type=float, default=0.5)
-    parser.add_argument("--iou-weight", type=float, default=0.3)
-    parser.add_argument("--context-scale", type=float, default=1.2)
+    parser.add_argument("--detection-threshold", type=float, default=0.8)
+    parser.add_argument("--max-track-age", type=int, default=32)
+    parser.add_argument("--max-distance", type=float, default=0.23)
+    parser.add_argument("--reactivation-distance", type=float, default=0.30)
+    parser.add_argument("--iou-weight", type=float, default=0.75)
+    parser.add_argument("--context-scale", type=float, default=1.3)
     parser.add_argument("--crop-size", type=int, default=128)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=2)
-    parser.add_argument("--smoothing-alpha", type=float, default=0.6)
+    parser.add_argument("--smoothing-alpha", type=float, default=0.8)
+    parser.add_argument(
+        "--emit-unmatched",
+        action="store_true",
+        default=False,
+        help="When enabled, keep unmatched tracks visible using last bbox until max-track-age is exceeded.",
+    )
+    parser.add_argument(
+        "--no-emit-unmatched",
+        dest="emit_unmatched",
+        action="store_false",
+        help="Disable emission of unmatched tracks.",
+    )
 
     args = parser.parse_args(argv)
     return TrackerConfig(
@@ -379,6 +497,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> TrackerConfig:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         smoothing_alpha=args.smoothing_alpha,
+        emit_unmatched=args.emit_unmatched,
     )
 
 

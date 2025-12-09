@@ -1,165 +1,148 @@
 # MOT16 Tracking Pipeline
 
-Minimal MOT16 reproduction recipe: preprocess the dataset, fine-tune a Faster R-CNN detector, train a Siamese Re-ID encoder, then run the tracker (with optional smoothing and overlays). Tested on macOS Sonoma (Apple Silicon + Intel) and Windows 11; Linux users can follow the macOS shell commands.
+End-to-end MOT16 pipeline: preprocess data, fine-tune Faster R-CNN, train a Siamese Re-ID encoder, and run tracking with smoothing and reactivation. Tested on macOS, Windows 11, and Linux.
+
+- **Single-target demo (MOT16 test, ID 7):** [`outputs/tracks_single/MOT16-07_track7_overlay.mp4`](outputs/tracks_single/MOT16-07_track7_overlay.mp4) (~62 MB)
+- **Final report (PDF):** [`MOT_project (1).pdf`](MOT_project%20(1).pdf)
+
+> Note: Model weights (.pth) and raw MOT16 data are not committed. Recreate them via the steps below.
 
 ---
 
-## 1. Dataset
-- Download MOT16 from https://motchallenge.net/data/MOT16/
-- Place the archive in the project root as `MOT16.zip` (or under `data/`)
-- Extract to `data/MOT16/`
-
----
-
-## 2. Environment
-
-### macOS / Linux (bash/zsh)
+## Quickstart (tracking only)
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+# 1) Create environment
+python -m venv .venv && source .venv/bin/activate        # PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
+
+# 2) Prepare data indices (after unzipping MOT16 to data/MOT16)
+python -m src.data.build_dataset_index data/MOT16 --output data/processed_annotations
+
+# 3) Run tracking on a test sequence (multi-target)
+python -m src.tracking.inference \
+    data/MOT16/test \
+    data/processed_annotations \
+    outputs/detector/detector_epoch_003.pth \
+    outputs/reid/best_reid_model.pth \
+    --output-dir outputs/tracks \
+    --sequences MOT16-07 \
+    --detection-threshold 0.80 \
+    --max-distance 0.23 \
+    --iou-weight 0.75 \
+    --max-track-age 32 \
+    --smoothing-alpha 0.80 \
+    --context-scale 1.30 \
+    --reactivation-distance 0.30
+
+# 4) Render overlay
+python scripts/render_tracks.py \
+    data/MOT16/test/MOT16-07/img1 \
+    outputs/tracks/MOT16-07_tracks.json \
+    outputs/tracks/MOT16-07_overlay.mp4 \
+    --fps 10
 ```
 
-### Windows (PowerShell)
-```powershell
+---
+
+## Environment
+```bash
 python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+source .venv/bin/activate       # PowerShell: .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
+If you have CUDA, reinstall `torch`/`torchvision` with the matching CUDA wheels. Metal (mps) works; CPU is fine for short runs.
 
-> `requirements.txt` installs CPU/Metal wheels for PyTorch. If you have CUDA, reinstall `torch` and `torchvision` with the matching index URL for your GPU.
+## Data
+1) Download MOT16 from https://motchallenge.net/data/MOT16/ and place `MOT16.zip` in the repo (or `data/`).  
+2) Extract to `data/MOT16/`.  
+   - macOS/Linux: `unzip MOT16.zip -d data/MOT16`  
+   - Windows: `Expand-Archive MOT16.zip -DestinationPath data\MOT16`  
+3) Build indices: `python -m src.data.build_dataset_index data/MOT16 --output data/processed_annotations`
 
----
-
-## 3. Data Preparation
-
-### macOS / Linux
+## Training (optional if you already have weights)
+- Detector (Faster R-CNN): see `docs_detector_training.md` for full notes. Example:
 ```bash
-unzip MOT16.zip -d data/MOT16
-python -m src.data.build_dataset_index data/MOT16 --output data/processed_annotations
-```
-
-### Windows (PowerShell)
-```powershell
-Expand-Archive MOT16.zip -DestinationPath data\MOT16
-python -m src.data.build_dataset_index data/MOT16 --output data/processed_annotations
-```
-
-This creates JSON annotations under `data/processed_annotations/.../frames/` plus a `summary.json`.
-
----
-
-## 4. Training
-
-### 4.1 Fine-tune Faster R-CNN
-```bash
-# macOS / Linux (swap --device mps for cuda/cpu as needed)
 python -m src.training.detector_trainer \
     data/MOT16/train \
     data/processed_annotations \
     --output-dir outputs/detector \
-    --epochs 12 \
-    --batch-size 2 \
-    --lr 0.005 \
-    --val-fraction 0.1 \
-    --device mps
-```
-```powershell
-# Windows
-python -m src.training.detector_trainer `
-    data/MOT16/train `
-    data/processed_annotations `
-    --output-dir outputs/detector `
-    --epochs 12 `
-    --batch-size 2 `
-    --lr 0.005 `
-    --val-fraction 0.1 `
+    --epochs 12 --batch-size 2 --lr 0.005 --val-fraction 0.1 \
     --device cuda
 ```
-Outputs: checkpoints in `outputs/detector/`, loss curves in `training_history.json` (best val loss ≈ 0.88 at epoch 12).
-
-### 4.2 Train the Siamese Re-ID Encoder
+- Re-ID (Siamese encoder):
 ```bash
 python -m src.training.reid_trainer \
     data/MOT16/train \
     data/processed_annotations \
     --output-dir outputs/reid \
-    --pairs-per-epoch 10000 \
-    --val-pairs 2000 \
-    --epochs 20 \
-    --batch-size 128 \
-    --device mps
-```
-```powershell
-python -m src.training.reid_trainer `
-    data/MOT16/train `
-    data/processed_annotations `
-    --output-dir outputs/reid `
-    --pairs-per-epoch 10000 `
-    --val-pairs 2000 `
-    --epochs 20 `
-    --batch-size 128 `
+    --pairs-per-epoch 10000 --val-pairs 2000 --epochs 20 --batch-size 128 \
     --device cuda
 ```
-Check `outputs/reid/reid_training_history.json`; best val loss ≈ 0.062 with positive/negative distances ≈ 0.20 / 0.98.
 
----
-
-## 5. Tracking & Overlay
+## Tracking (multi-target)
+Defaults tuned to reduce ghost boxes: `--detection-threshold 0.80`, `--max-distance 0.23`, `--max-track-age 32`, `--smoothing-alpha 0.80`, `--reactivation-distance 0.30`, `--emit-unmatched` disabled by default.
 ```bash
 python -m src.tracking.inference \
-    data/MOT16/train \
+    data/MOT16/test \
     data/processed_annotations \
-    outputs/detector/detector_epoch_012.pth \
+    outputs/detector/detector_epoch_003.pth \
     outputs/reid/best_reid_model.pth \
     --output-dir outputs/tracks \
-    --sequences MOT16-02 \
-    --device mps \
-    --detection-threshold 0.68 \
-    --max-distance 0.30 \
-    --iou-weight 0.6 \
-    --max-track-age 18 \
-    --smoothing-alpha 0.5
+    --sequences MOT16-07 \
+    --detection-threshold 0.80 \
+    --max-distance 0.23 \
+    --iou-weight 0.75 \
+    --max-track-age 32 \
+    --smoothing-alpha 0.80 \
+    --context-scale 1.30 \
+    --reactivation-distance 0.30
 ```
-```powershell
-python -m src.tracking.inference `
-    data/MOT16/train `
-    data/processed_annotations `
-    outputs/detector/detector_epoch_012.pth `
-    outputs/reid/best_reid_model.pth `
-    --output-dir outputs/tracks `
-    --sequences MOT16-02 `
-    --device cuda `
-    --detection-threshold 0.68 `
-    --max-distance 0.30 `
-    --iou-weight 0.6 `
-    --max-track-age 18 `
-    --smoothing-alpha 0.5
-```
-
-Generate an MP4 overlay (optional but helpful):
+Render an overlay:
 ```bash
 python scripts/render_tracks.py \
-    data/MOT16/train/MOT16-02/img1 \
-    outputs/tracks/MOT16-02_tracks.json \
-    outputs/tracks/MOT16-02_overlay.mp4 --fps 10
+    data/MOT16/test/MOT16-07/img1 \
+    outputs/tracks/MOT16-07_tracks.json \
+    outputs/tracks/MOT16-07_overlay.mp4 \
+    --fps 10
 ```
-Same command works on Windows PowerShell. If boxes jitter, bump `--detection-threshold`, lower `--max-distance`, or tweak `--smoothing-alpha` and rerun the tracker + overlay.
+Tuning tips: if ghosts appear, raise `--detection-threshold` (e.g., 0.82) or lower `--reactivation-distance` (e.g., 0.25). If IDs drop too quickly, nudge `--max-track-age` upward modestly.
 
----
+## Single-target demo (how this repo’s MP4 was made)
+1) Run inference (as above) on a MOT16 **test** sequence.  
+2) Pick a stable track_id (e.g., 7 for MOT16-07 in our run):
+```bash
+python - <<'PY'
+import json, collections
+data=json.load(open("outputs/tracks/MOT16-07_tracks.json"))
+print(collections.Counter(d["track_id"] for d in data).most_common(5))
+PY
+```
+3) Filter to that ID and render:
+```bash
+python - <<'PY'
+import json
+inp="outputs/tracks/MOT16-07_tracks.json"
+out="outputs/tracks/MOT16-07_track7.json"
+target=7
+json.dump([d for d in json.load(open(inp)) if d["track_id"]==target], open(out,"w"), indent=2)
+PY
 
-## 6. Snapshot
-- Detector best validation loss ≈ 0.88 (epoch 12)
-- Re-ID best validation loss ≈ 0.062 (epoch 11), positive/negative distances ≈ 0.20 / 0.98
-- MOT16-02 tracking: 600 frames processed, ~12 tracks per frame (range 6–19), 285 unique IDs
+python scripts/render_tracks.py \
+    data/MOT16/test/MOT16-07/img1 \
+    outputs/tracks/MOT16-07_track7.json \
+    outputs/tracks/MOT16-07_track7_overlay.mp4 \
+    --fps 10
+```
+The resulting MP4 is committed at `outputs/tracks_single/MOT16-07_track7_overlay.mp4`.
 
-## 7. Repo Layout
-- `src/data/` — dataset parsing, transforms, overlay helpers
-- `src/training/` — detector + Re-ID trainers
-- `src/tracking/` — association, smoothing, inference CLI
-- `scripts/render_tracks.py` — MP4 overlay renderer
-- `docs_detector_training.md` — extended notes / reproduction log
-- `outputs/` — generated artifacts (git-ignored; regenerate using the steps above)
+## Deliverables included
+- Source code (no weights).  
+- Single-target test video: `outputs/tracks_single/MOT16-07_track7_overlay.mp4` (ID 7).  
+- Final report PDF: `MOT_project (1).pdf`.
 
+## Submission checklist
+- Do **not** bundle model weights or MOT16 raw data when submitting.  
+- Include: code, processed annotations (optional), report PDF, and at least one tracking MP4 (single-target demo provided).  
+- Each team member should still submit their own anonymous questionnaire per course instructions.

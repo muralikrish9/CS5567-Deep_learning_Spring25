@@ -82,11 +82,13 @@ python -m src.tracking.inference \
     --output-dir outputs/tracks \
     --sequences MOT16-02 \
     --device cuda \
-    --detection-threshold 0.68 \
-    --max-distance 0.30 \
-    --iou-weight 0.6 \
-    --max-track-age 18 \
-    --smoothing-alpha 0.5
+    --detection-threshold 0.80 \
+    --max-distance 0.23 \
+    --iou-weight 0.75 \
+    --max-track-age 32 \
+    --smoothing-alpha 0.80 \
+    --context-scale 1.30 \
+    --reactivation-distance 0.30
 
 # 5. Render a sanity-check overlay (requires opencv-python)
 python scripts/render_tracks.py \
@@ -96,9 +98,9 @@ python scripts/render_tracks.py \
     --fps 10
 ```
 
-Use the last command as a qualitative gut check; if the boxes jitter, nudge `--detection-threshold`, `--max-distance`, or `--smoothing-alpha` and rerun steps 4 and 5 for the affected sequence.
+Use the last command as a qualitative gut check; if the boxes jitter, nudge `--detection-threshold` down a bit (e.g., 0.75) or increase `--smoothing-alpha`. Only re-enable unmatched emission or lengthen `--max-track-age` if you prefer persistence over ghost suppression.
 
-## Report Notes (for Future Me)
+## Report Notes (for Future Self)
 
 - Methodology section should call out: detector freeze strategy, Siamese architecture, the association cost (cosine + IOU) and the smoothing we layered on as a last-mile fix.
 - Results section ought to carry the loss numbers above, plus a short qualitative note about MOT16-02 coverage (~12 tracks per frame, 285 IDs) and the overlay video as evidence.
