@@ -165,7 +165,4 @@ The resulting MP4 is committed at `outputs/tracks_single/MOT16-07_track7_overlay
 - Single-target test video: `outputs/tracks_single/MOT16-07_track7_overlay.mp4` (ID 7).  
 - Final report PDF: `MOT_project (1).pdf`.
 
-## Submission checklist
-- Do **not** bundle model weights or MOT16 raw data when submitting.  
-- Include: code, processed annotations (optional), report PDF, and at least one tracking MP4 (single-target demo provided).  
-- Each team member should still submit their own anonymous questionnaire per course instructions.
+
